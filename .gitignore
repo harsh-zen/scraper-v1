@@ -1,0 +1,9 @@
+.env
+.ipynb_checkpoints
+.langgraph-data
+venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*/venv
