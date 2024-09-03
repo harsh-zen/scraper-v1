@@ -1,28 +1,90 @@
+# import argparse
+# import os
+# import json
+# import uuid
+# from langchain_community.document_loaders import AsyncChromiumLoader
+# from langchain_community.document_transformers import BeautifulSoupTransformer
+# from langchain_openai import OpenAIEmbeddings
+# from langchain_postgres.vectorstores import PGVector
+# from langchain_core.documents import Document
+# from dotenv import load_dotenv
+# from langchain_community.document_loaders import AsyncHtmlLoader
+# # Load environment variables
+# load_dotenv()
+
+# # Database connection parameters
+# connection = "postgresql+psycopg://langchain:langchain@localhost:6024/langchain"
+# collection_name = "business_data"
+
+# # Setup embeddings and vector store
+# embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
+# vector_store = PGVector(
+#     embeddings=embeddings,
+#     collection_name=collection_name,
+#     connection=connection,
+#     use_jsonb=True,
+# )
+
+# # Setup command line arguments
+# parser = argparse.ArgumentParser()
+# parser.add_argument("--site", type=str, required=True)
+# parser.add_argument("--depth", type=int, default=3)
+
+# def scrape_and_transform(url: str):
+#     # Initialize AsyncChromiumLoader
+#     loader = AsyncHtmlLoader([url])
+#     html = loader.load()
+
+#     # Initialize BeautifulSoupTransformer
+#     bs_transformer = BeautifulSoupTransformer()
+#     docs_transformed = bs_transformer.transform_documents(html, tags_to_extract=["p", "li", "div", "a", "span"])
+    
+#     return docs_transformed
+
+# def main():
+#     args = parser.parse_args()
+#     url = args.site
+    
+#     # Scrape and transform documents
+#     docs_transformed = scrape_and_transform(url)
+    
+#     # Add documents to PGVector
+#     business_id = str(uuid.uuid4())
+#     for document in docs_transformed:
+#         document.metadata["business_id"] = business_id
+    
+#     ids = vector_store.add_documents(docs_transformed)
+#     print("Document IDs:", ids)
+#     print("Business ID:", business_id)
+
+# if __name__ == "__main__":
+#     main()
+import argparse
 import os
 import json
 import uuid
-
-from langchain.document_loaders import (
-    BSHTMLLoader,
-    DirectoryLoader,
-)
-from langchain.embeddings.openai import OpenAIEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import Chroma
+from langchain_community.document_loaders import AsyncChromiumLoader
+from langchain_community.document_transformers import BeautifulSoupTransformer
 from langchain_openai import OpenAIEmbeddings
-
-from langchain_core.documents import Document
-from langchain_postgres import PGVector
 from langchain_postgres.vectorstores import PGVector
+from langchain_core.documents import Document
 from dotenv import load_dotenv
+from langchain_community.document_loaders import AsyncHtmlLoader
+from urllib.parse import urljoin, urlparse
+from bs4 import BeautifulSoup
+
+# Load environment variables
 load_dotenv()
 
-# See docker command above to launch a postgres instance with pgvector enabled.
-connection = "postgresql+psycopg://langchain:langchain@localhost:6024/langchain"  # Uses psycopg3!
+# Set USER_AGENT environment variable
+os.environ['USER_AGENT'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+
+# Database connection parameters
+connection = "postgresql+psycopg://langchain:langchain@localhost:6024/langchain"
 collection_name = "business_data"
 
+# Setup embeddings and vector store
 embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
-
 vector_store = PGVector(
     embeddings=embeddings,
     collection_name=collection_name,
@@ -30,43 +92,63 @@ vector_store = PGVector(
     use_jsonb=True,
 )
 
-from dotenv import load_dotenv
+# Setup command line arguments
+parser = argparse.ArgumentParser()
+parser.add_argument("--site", type=str, required=True)
+parser.add_argument("--depth", type=int, default=3)
+
+def is_valid_url(url, base_url):
+    parsed_url = urlparse(url)
+    parsed_base = urlparse(base_url)
+    return parsed_url.netloc == parsed_base.netloc and parsed_url.scheme in ['http', 'https']
+
+async def scrape_and_transform(url: str, depth: int, base_url: str):
+    if depth <= 0:
+        return []
+
+    print(f"Scraping URL: {url} (Depth: {depth})")
+    
+    # Initialize AsyncHtmlLoader
+    loader = AsyncHtmlLoader([url])
+    html = await loader.aload()
+    
+    # Initialize BeautifulSoupTransformer
+    bs_transformer = BeautifulSoupTransformer()
+    docs_transformed = bs_transformer.transform_documents(html, tags_to_extract=["p", "li", "div", "a", "span"])
+    
+    all_docs = docs_transformed
+
+    if depth > 1:
+        # Create BeautifulSoup object directly
+        soup = BeautifulSoup(html[0].page_content, 'html.parser')
+        links = [a['href'] for a in soup.find_all('a', href=True)]
+        unique_links = list(set(links))
+        
+        for link in unique_links:
+            full_url = urljoin(base_url, link)
+            if is_valid_url(full_url, base_url):
+                nested_docs = await scrape_and_transform(full_url, depth - 1, base_url)
+                all_docs.extend(nested_docs)
+    
+    return all_docs
+
+async def main():
+    args = parser.parse_args()
+    url = args.site
+    depth = args.depth
+    
+    # Scrape and transform documents
+    docs_transformed = await scrape_and_transform(url, depth, url)
+    
+    # Add documents to PGVector
+    business_id = str(uuid.uuid4())
+    for document in docs_transformed:
+        document.metadata["business_id"] = business_id
+    
+    ids = vector_store.add_documents(docs_transformed)
+    print(f"Added {len(ids)} documents to the vector store")
+    print("Business ID:", business_id)
 
 if __name__ == "__main__":
-    load_dotenv()
-    if os.path.exists("./chroma"):
-        print("already embedded")
-        exit(0)
-
-    loader = DirectoryLoader(
-        "./scrape",
-        glob="*.html",
-        loader_cls=BSHTMLLoader,
-        show_progress=True,
-        loader_kwargs={"get_text_separator": " "},
-    )
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200,
-    )
-    data = loader.load()
-    documents = text_splitter.split_documents(data)
-
-    # map sources from file directory to web source
-    with open("./scrape/sitemap.json", "r") as f:
-        sitemap = json.loads(f.read())
-
-    business_id = uuid.uuid4()
-
-    for document in documents:
-        document.metadata["source"] = sitemap[
-            document.metadata["source"].replace(".html", "").replace("scrape/", "")
-        ]
-        document.metadata["business_id"] = business_id
-
-    # embedding_model = OpenAIEmbeddings(model="text-embedding-ada-002")
-    # db = Chroma.from_documents(documents, embedding_model, persist_directory="./chroma")
-    # db.persist()
-    ids = vector_store.add_documents(documents)
-    print(ids)
-    print("\n\nbusiness_id", business_id)
+    import asyncio
+    asyncio.run(main())
