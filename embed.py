@@ -80,7 +80,7 @@ load_dotenv()
 os.environ['USER_AGENT'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 
 # Database connection parameters
-connection = "postgresql+psycopg://langchain:langchain@localhost:6024/langchain"
+connection = "postgresql+psycopg://langchain:langchain@localhost:5432/langchain"
 collection_name = "business_data"
 
 # Setup embeddings and vector store
@@ -115,7 +115,6 @@ async def scrape_and_transform(url: str, depth: int, base_url: str):
     # Initialize BeautifulSoupTransformer
     bs_transformer = BeautifulSoupTransformer()
     docs_transformed = bs_transformer.transform_documents(html, tags_to_extract=["p", "li", "div", "a", "span"])
-    
     all_docs = docs_transformed
 
     if depth > 1:
